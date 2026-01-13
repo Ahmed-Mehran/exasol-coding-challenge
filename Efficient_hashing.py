@@ -1,107 +1,167 @@
+import socket
+import ssl
 import hashlib
 import multiprocessing as mp
-import time
 import string
-import os
 
+# ---------------- POW CODE ----------------
+def worker(found_event, result_queue, worker_id, total_workers, authdata, difficulty):
+    batch_size = 200000
+    length = 7
 
-# Worker function executed by each process
-def worker(found_event, result_queue, start_counter, step):
-    authdata = "ABC123"
-    difficulty = 7
-    batch_size = 100000
-    length = 6
-
-    # Pre-encode static data to reduce per-iteration overhead
     authdata_bytes = authdata.encode()
-
-    # Allowed characters encoded once
     allowed_chars = (
         string.ascii_letters +
         string.digits +
-        "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~"
+        "!\"#$%&'()*+,-./:;<=>?@[\\]^_{|}~"
     ).encode()
 
     base = len(allowed_chars)
-
-    # Reusable buffer to avoid repeated allocations
-    buffer = bytearray(authdata_bytes + b' ' * length)
     prefix_len = len(authdata_bytes)
-
-    sha1 = hashlib.sha1
     target_prefix = '0' * difficulty
 
-    # Each process starts at a different counter
-    counter = start_counter
-    attempts_total = 0
+    # --- Odometer Initialization ---
+    # We start each worker at a different starting point to cover different ground
+    indices = [0] * length
+    indices[0] = (worker_id * (base // total_workers)) % base
+
+
+    # Pre-build the buffer
+    current_suffix = bytes([allowed_chars[i] for i in indices])
+    buffer = bytearray(authdata_bytes + current_suffix)
+    
+    sha1 = hashlib.sha1
 
     while not found_event.is_set():
+
         for _ in range(batch_size):
 
-            # Convert counter to base-N representation (deterministic suffix generation)
-            temp = counter
+            for i in range(length - 1, -1, -1):
 
-            for i in range(length):
+                indices[i] += 1
 
-                buffer[prefix_len + i] = allowed_chars[temp % base]
-                temp //= base
-
-            hash_hex = sha1(buffer).hexdigest()
-            attempts_total += 1
-
-            # Check difficulty condition
-            if hash_hex.startswith(target_prefix):
+                if indices[i] < base:
+                    buffer[prefix_len + i] = allowed_chars[indices[i]]
+                    break
                 
+                else:
+                    indices[i] = 0
+                    buffer[prefix_len + i] = allowed_chars[0]
+
+            if sha1(buffer).hexdigest().startswith(target_prefix):
                 found_event.set()
-                result_queue.put(
-                    (
-                        buffer[prefix_len:].decode(),
-                        buffer.decode(),
-                        hash_hex,
-                        attempts_total,
-                        os.getpid()
-                    )
-                )
+                result_queue.put(buffer[prefix_len:].decode())
                 return
 
-            # Skip ahead so processes do not overlap search space
-            counter += step
 
-
-if __name__ == "__main__":
-    start_time = time.time()
-    cpu_count = mp.cpu_count()
-    print(f"Using {cpu_count} cores")
-
+def solve_pow(authdata, difficulty):
     found_event = mp.Event()
     result_queue = mp.Queue()
+    cpu_count = mp.cpu_count()
 
     processes = []
-
-    # Assign each process a unique starting point
     for i in range(cpu_count):
         p = mp.Process(
             target=worker,
-            args=(found_event, result_queue, i, cpu_count)
+            args=(found_event, result_queue, i, cpu_count, authdata, difficulty)
         )
         p.start()
         processes.append(p)
 
-    # Wait for first successful result
-    suffix, combined, hash_hex, attempts, pid = result_queue.get()
-    end_time = time.time()
+    suffix = result_queue.get()
 
-    total_time = end_time - start_time
-
-    print("\nSuccess!")
-    print(f"Found by process PID: {pid}")
-    print(f"Suffix: {suffix}")
-    print(f"Combined: {combined}")
-    print(f"Hash: {hash_hex}")
-    print(f"Attempts (by winning process): {attempts}")
-    print(f"Total Time: {total_time:.4f} seconds")
-    print(f"Approximate Hash/Sec Per Core: {attempts / total_time:.2f}")
-
-    # Terminate remaining processes
     for p in processes:
         p.terminate()
+
+    return suffix
+
+
+# ---------------- MAIN ENTRY POINT ----------------
+if __name__ == "__main__":
+
+    # -------- TLS SETUP --------
+    context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
+    context.check_hostname = False        
+    context.verify_mode = ssl.CERT_NONE  
+    context.load_cert_chain(certfile="client.crt", keyfile="client.key")
+
+    sock = socket.create_connection(("18.202.148.130", 3336))
+    conn = context.wrap_socket(sock)
+
+    authdata = ""
+
+    print("Connected to server, waiting for commands...")
+
+    # -------- PROTOCOL LOOP --------
+    while True:
+        line = conn.recv(4096).decode().strip()
+        if not line:
+            print("Server closed connection or no data received.")
+            break
+
+        print("Received:", line)
+        args = line.split(" ")
+
+        if args[0] == "HELO":
+            conn.sendall(b"TOAKUEI\n")
+
+        elif args[0] == "POW":
+            authdata = args[1]
+            difficulty = int(args[2])
+            print(f"Starting POW: authdata={authdata}, difficulty={difficulty}")
+
+            suffix = solve_pow(authdata, difficulty)
+            print(f"POW solved: suffix={suffix}")
+            conn.sendall((suffix + "\n").encode())
+
+        elif args[0] == "NAME":
+            token = args[1]
+            h = hashlib.sha1((authdata + token).encode()).hexdigest()
+            conn.sendall(f"{h} Mehran Ahmed Dar\n".encode())
+
+        elif args[0] == "MAILNUM":
+            token = args[1]
+            h = hashlib.sha1((authdata + token).encode()).hexdigest()
+            conn.sendall(f"{h} 1\n".encode())
+
+        elif args[0] == "MAIL1":
+            token = args[1]
+            h = hashlib.sha1((authdata + token).encode()).hexdigest()
+            conn.sendall(f"{h} mehranahmed22@gmail.com\n".encode())
+
+        elif args[0] == "SKYPE":
+            token = args[1]
+            h = hashlib.sha1((authdata + token).encode()).hexdigest()
+            conn.sendall(f"{h} N/A\n".encode())
+
+        elif args[0] == "BIRTHDATE":
+            token = args[1]
+            h = hashlib.sha1((authdata + token).encode()).hexdigest()
+            conn.sendall(f"{h} 10.06.1997\n".encode())
+
+        elif args[0] == "COUNTRY":
+            token = args[1]
+            h = hashlib.sha1((authdata + token).encode()).hexdigest()
+            conn.sendall(f"{h} India\n".encode())
+
+        elif args[0] == "ADDRNUM":
+            token = args[1]
+            h = hashlib.sha1((authdata + token).encode()).hexdigest()
+            conn.sendall(f"{h} 1\n".encode())
+
+        elif args[0] == "ADDRLINE1":
+            token = args[1]
+            h = hashlib.sha1((authdata + token).encode()).hexdigest()
+            conn.sendall(f"{h} Jammu Kashmir Srinagar Baghat Barzulla\n".encode())
+
+        elif args[0] == "END":
+            conn.sendall(b"OK\n")
+            print("Received END. Closing connection.")
+            break
+
+        elif args[0] == "ERROR":
+            print("Server error:", " ".join(args[1:]))
+            break
+
+    conn.close()
+    print("Connection closed.")

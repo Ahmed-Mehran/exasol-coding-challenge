@@ -17,8 +17,11 @@ this approach is conceptually better than the single-core version because it use
 multicore version. As a result, this approach is faster and more efficient than the earlier multicore attempt, while keeping the same hashing logic. The Hash generated per second speed increased back to 2-3 lakh Hash/Sec/Core
 
 - Commit 4(code_stage_4):  In this stage, the code still uses multi-core batching, but small optimisations were applied by moving variables into the worker function and generating the random suffix directly inside the loop instead of using a separate function. This slightly cleans up the code and reduces minor overhead,
-but as observed, it does not significantly improve speed, showing that the main bottleneck was elsewhere and not in variable scope or function calls.  Commit 5(code_stage_5): In this stage, the code replaces random string generation with a sequential, deterministic way of generating suffixes, so each core checks 
-unique strings with no duplication. This removes the expensive random generation logic and evenly divides the search space across cores, which leads to a major performance improvement. This turned out to be the best optimization, increasing speed by about 3× per core, from roughly 2 lakh hashes/sec/core to 7–8 lakh hashes/sec/core.
+but as observed, it does not significantly improve speed, showing that the main bottleneck was elsewhere and not in variable scope or function calls.
+
+- Commit 5(code_stage_5): In this stage, the code replaces random string generation with a sequential, deterministic way of generating suffixes, so each core checks unique strings with no duplication. This removes the expensive random generation logic and evenly divides the search space across cores, which leads to a major performance improvement. This turned out to be the best optimization, increasing speed by about 3× per core, from roughly 2 lakh hashes/sec/core to 7–8 lakh hashes/sec/core.
 
 ## Language
 Python
+
+

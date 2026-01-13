@@ -5,52 +5,50 @@ import time
 import multiprocessing as mp
 import os
 
-# Static auth data provided as part of the challenge
+# Static auth data
 authdata = "ABC123"
 
-# Difficulty = number of leading zeros required in the hash
-difficulty = 4
+# Difficulty = number of leading zeros required in hash
+difficulty = 5   # number of leading zeros required in hash
+
+# Batch size to reduce inter-process synchronization overhead
+# Each process performs many attempts locally before checking shared state
+batch_size = 100000  # number of attempts per batch
 
 
 # Generates a random suffix to append to authdata
-# Each process independently generates random strings
 def random_string(length=6):
-    allowed_chars = (
-        string.ascii_letters
-        + string.digits
-        + "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~"
-    )
+    allowed_chars = string.ascii_letters + string.digits + "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~"
     result = []
     for i in range(length):
         result.append(random.choice(allowed_chars))
     return "".join(result)
 
 
-# Worker function executed by each process
-# All processes run the SAME code but explore DIFFERENT parts of the search space
+# Worker process
+# Uses batching to amortize process coordination and event-check overhead
 def worker(found_event, result_queue):
-    attempts = 0
+    attempts_total = 0
 
-    # Loop continues until some process finds a valid hash
+    # Continue work until another process signals success
     while not found_event.is_set():
-        attempts += 1
+        # Perform a large batch of hash attempts locally
+        for _ in range(batch_size):
 
-        suffix = random_string()
-        combined = authdata + suffix
+            suffix = random_string()
+            combined = authdata + suffix
 
-        # Hash computation (CPU-bound work)
-        hash_hex = hashlib.sha1(combined.encode()).hexdigest()
+            hash_hex = hashlib.sha1(combined.encode()).hexdigest()
+            attempts_total += 1
 
-        # Check if hash satisfies difficulty condition
-        if hash_hex.startswith('0' * difficulty):
-            # Signal other processes to stop
-            found_event.set()
+            # Check difficulty condition
+            if hash_hex.startswith('0' * difficulty):
+                # Signal all processes to stop
+                found_event.set()
 
-            # Send result back to main process
-            result_queue.put(
-                (suffix, combined, hash_hex, attempts, os.getpid())
-            )
-            break
+                # Send result to main process
+                result_queue.put((suffix, combined, hash_hex, attempts_total, os.getpid()))
+                return  # Exit immediately on success
 
 
 if __name__ == "__main__":
@@ -60,11 +58,8 @@ if __name__ == "__main__":
     cpu_count = mp.cpu_count()
     print(f"Using {cpu_count} cores")
 
-    # Event used for inter-process coordination
-    # Once set, all processes should stop work
+    # Shared synchronization primitives
     found_event = mp.Event()
-
-    # Queue used to collect result from the winning process
     result_queue = mp.Queue()
 
     processes = []
@@ -75,7 +70,7 @@ if __name__ == "__main__":
         p.start()
         processes.append(p)
 
-    # Wait for the first successful result
+    # Wait for first successful result
     suffix, combined, hash_hex, attempts, pid = result_queue.get()
     end_time = time.time()
 
@@ -83,18 +78,11 @@ if __name__ == "__main__":
     print(f"Found by process PID: {pid}")
     print(f"Suffix: {suffix}")
     print(f"Combined: {combined}")
-    print(f"MD5 Hash: {hash_hex}")
+    print(f"SHA1 Hash: {hash_hex}")
     print(f"Attempts (by winning process): {attempts}")
-    print(
-        f"Time taken: {end_time - start_time:.4f} seconds "
-        f"for MULTI CORE with difficulty {difficulty}"
-    )
-    print(
-        f"Hash Attempts Per Second Per Core "
-        f"{attempts / (end_time - start_time):.4f}"
-    )
+    print(f"Time taken: {end_time - start_time:.4f} seconds for MULTI CORE with {difficulty} difficult level")
+    print(f"Hash Attempts Per Second Per Core {attempts/(end_time-start_time):.4f}")
 
-    # Terminate all remaining processes
-    # Many processes are killed after partial work → wasted computation
+    # Terminate remaining processes after solution is found
     for p in processes:
         p.terminate()
